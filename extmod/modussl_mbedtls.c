@@ -35,6 +35,8 @@
 #include "py/runtime.h"
 #include "py/stream.h"
 #include "py/objstr.h"
+#include "py/smallint.h"
+#include "py/mphal.h"
 
 // mbedtls_time_t
 #include "mbedtls/platform.h"
@@ -43,6 +45,7 @@
 #include "mbedtls/pk.h"
 #include "mbedtls/entropy.h"
 #include "mbedtls/ctr_drbg.h"
+#include "mbedtls/timing.h"
 #include "mbedtls/debug.h"
 #include "mbedtls/error.h"
 
@@ -56,6 +59,11 @@ typedef struct _mp_obj_ssl_socket_t {
     mbedtls_x509_crt cacert;
     mbedtls_x509_crt cert;
     mbedtls_pk_context pkey;
+    #ifdef MBEDTLS_SSL_PROTO_DTLS
+    mp_uint_t timer_start_ms;
+    mp_int_t timer_fin_ms;
+    mp_int_t timer_int_ms;
+    #endif
 } mp_obj_ssl_socket_t;
 
 struct ssl_args {
@@ -66,6 +74,7 @@ struct ssl_args {
     mp_arg_val_t cert_reqs;
     mp_arg_val_t cadata;
     mp_arg_val_t do_handshake;
+    mp_arg_val_t dtls;
 };
 
 STATIC const mp_obj_type_t ussl_socket_type;
@@ -153,6 +162,40 @@ STATIC int _mbedtls_ssl_recv(void *ctx, byte *buf, size_t len) {
     }
 }
 
+#ifdef MBEDTLS_SSL_PROTO_DTLS
+STATIC void _mbedtls_timing_set_delay(void *ctx, uint32_t int_ms, uint32_t fin_ms) {
+    mp_obj_ssl_socket_t *o = (mp_obj_ssl_socket_t *)ctx;
+
+    o->timer_int_ms = int_ms;
+    o->timer_fin_ms = fin_ms;
+
+    if (fin_ms != 0) {
+        o->timer_start_ms = mp_hal_ticks_ms() & (MICROPY_PY_UTIME_TICKS_PERIOD - 1);
+    }
+}
+
+STATIC int _mbedtls_timing_get_delay(void *ctx) {
+    mp_obj_ssl_socket_t *o = (mp_obj_ssl_socket_t *)ctx;
+
+    if (o->timer_fin_ms == 0) {
+        return -1;
+    }
+
+    mp_uint_t now = mp_hal_ticks_ms() & (MICROPY_PY_UTIME_TICKS_PERIOD - 1);
+    mp_int_t elapsed_ms = ((now - o->timer_start_ms + MICROPY_PY_UTIME_TICKS_PERIOD / 2) & (MICROPY_PY_UTIME_TICKS_PERIOD - 1))
+        - MICROPY_PY_UTIME_TICKS_PERIOD / 2;
+
+    if (elapsed_ms >= o->timer_fin_ms) {
+        return 2;
+    }
+
+    if (elapsed_ms >= o->timer_int_ms) {
+        return 1;
+    }
+
+    return 0;
+}
+#endif
 
 STATIC mp_obj_ssl_socket_t *socket_new(mp_obj_t sock, struct ssl_args *args) {
     // Verify the socket object has the full stream protocol
@@ -187,7 +230,7 @@ STATIC mp_obj_ssl_socket_t *socket_new(mp_obj_t sock, struct ssl_args *args) {
 
     ret = mbedtls_ssl_config_defaults(&o->conf,
         args->server_side.u_bool ? MBEDTLS_SSL_IS_SERVER : MBEDTLS_SSL_IS_CLIENT,
-        MBEDTLS_SSL_TRANSPORT_STREAM,
+        args->dtls.u_bool ? MBEDTLS_SSL_TRANSPORT_DATAGRAM : MBEDTLS_SSL_TRANSPORT_STREAM,
         MBEDTLS_SSL_PRESET_DEFAULT);
     if (ret != 0) {
         goto cleanup;
@@ -211,6 +254,12 @@ STATIC mp_obj_ssl_socket_t *socket_new(mp_obj_t sock, struct ssl_args *args) {
             goto cleanup;
         }
     }
+
+    #ifdef MBEDTLS_SSL_PROTO_DTLS
+    mbedtls_ssl_set_timer_cb(&o->ssl, o,
+        _mbedtls_timing_set_delay,
+        _mbedtls_timing_get_delay);
+    #endif
 
     mbedtls_ssl_set_bio(&o->ssl, &o->sock, _mbedtls_ssl_send, _mbedtls_ssl_recv, NULL);
 
@@ -372,7 +421,7 @@ STATIC mp_uint_t socket_ioctl(mp_obj_t o_in, mp_uint_t request, uintptr_t arg, i
 }
 
 STATIC const mp_rom_map_elem_t ussl_socket_locals_dict_table[] = {
-    { MP_ROM_QSTR(MP_QSTR_read), MP_ROM_PTR(&mp_stream_read_obj) },
+    { MP_ROM_QSTR(MP_QSTR_read), MP_ROM_PTR(&mp_stream_read1_obj) },
     { MP_ROM_QSTR(MP_QSTR_readinto), MP_ROM_PTR(&mp_stream_readinto_obj) },
     { MP_ROM_QSTR(MP_QSTR_readline), MP_ROM_PTR(&mp_stream_unbuffered_readline_obj) },
     { MP_ROM_QSTR(MP_QSTR_write), MP_ROM_PTR(&mp_stream_write_obj) },
@@ -412,6 +461,7 @@ STATIC mp_obj_t mod_ssl_wrap_socket(size_t n_args, const mp_obj_t *pos_args, mp_
         { MP_QSTR_cert_reqs, MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = MBEDTLS_SSL_VERIFY_NONE}},
         { MP_QSTR_cadata, MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_rom_obj = MP_ROM_NONE} },
         { MP_QSTR_do_handshake, MP_ARG_KW_ONLY | MP_ARG_BOOL, {.u_bool = true} },
+        { MP_QSTR_dtls, MP_ARG_KW_ONLY | MP_ARG_BOOL, {.u_bool = false} },
     };
 
     // TODO: Check that sock implements stream protocol
