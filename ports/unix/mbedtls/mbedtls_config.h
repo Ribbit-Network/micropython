@@ -32,6 +32,10 @@
 // Enable DTLS
 #define MBEDTLS_SSL_PROTO_DTLS
 
+// Enable PSK modes and ciphers
+#define MBEDTLS_PSK_MODES
+#define MBEDTLS_KEY_EXCHANGE_PSK_ENABLED
+
 // Enable mbedtls modules
 #define MBEDTLS_HAVEGE_C
 #define MBEDTLS_TIMING_C

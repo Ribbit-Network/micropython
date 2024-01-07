@@ -373,6 +373,28 @@ STATIC mp_obj_t ssl_context_set_ciphers(mp_obj_t self_in, mp_obj_t ciphersuite) 
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_2(ssl_context_set_ciphers_obj, ssl_context_set_ciphers);
 
+#ifdef MBEDTLS_KEY_EXCHANGE_SOME_PSK_ENABLED
+// SSLContext.set_psk(username, password)
+STATIC mp_obj_t ssl_context_set_psk(mp_obj_t self_in, mp_obj_t username, mp_obj_t password) {
+    mp_obj_ssl_context_t *ssl_context = MP_OBJ_TO_PTR(self_in);
+    int ret;
+
+    size_t psk_identity_len;
+    const byte *psk_identity = (const byte *)mp_obj_str_get_data(username, &psk_identity_len);
+
+    size_t psk_key_len;
+    const byte *psk_key = (const byte *)mp_obj_str_get_data(password, &psk_key_len);
+
+    ret = mbedtls_ssl_conf_psk(&ssl_context->conf, (const unsigned char *) psk_key, psk_key_len, (const unsigned char *) psk_identity, psk_identity_len);
+    if (ret != 0) {
+        mbedtls_raise_error(ret);
+    }
+
+    return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_3(ssl_context_set_psk_obj, ssl_context_set_psk);
+#endif
+
 STATIC void ssl_context_load_key(mp_obj_ssl_context_t *self, mp_obj_t key_obj, mp_obj_t cert_obj) {
     size_t key_len;
     const byte *key = (const byte *)mp_obj_str_get_data(key_obj, &key_len);
@@ -487,6 +509,9 @@ STATIC const mp_rom_map_elem_t ssl_context_locals_dict_table[] = {
     #endif
     { MP_ROM_QSTR(MP_QSTR_get_ciphers), MP_ROM_PTR(&ssl_context_get_ciphers_obj)},
     { MP_ROM_QSTR(MP_QSTR_set_ciphers), MP_ROM_PTR(&ssl_context_set_ciphers_obj)},
+    #ifdef MBEDTLS_KEY_EXCHANGE_SOME_PSK_ENABLED
+    { MP_ROM_QSTR(MP_QSTR_set_psk), MP_ROM_PTR(&ssl_context_set_psk_obj)},
+    #endif
     { MP_ROM_QSTR(MP_QSTR_load_cert_chain), MP_ROM_PTR(&ssl_context_load_cert_chain_obj)},
     { MP_ROM_QSTR(MP_QSTR_load_verify_locations), MP_ROM_PTR(&ssl_context_load_verify_locations_obj)},
     { MP_ROM_QSTR(MP_QSTR_wrap_socket), MP_ROM_PTR(&ssl_context_wrap_socket_obj) },
